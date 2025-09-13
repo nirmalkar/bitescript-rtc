@@ -1,28 +1,32 @@
 import express from 'express';
 import http from 'http';
-import { WebSocket, WebSocketServer } from 'ws';
+import { createWsServer } from './ws/wsServer';
 
-const app = express();
-app.get('/health', (_req: express.Request, res: express.Response) =>
-  res.json({ ok: true, msg: 'bitescript-rtc is up' })
-);
+export function createServer() {
+  const app = express();
+  app.use(express.json());
 
-// This server we need to upgrade to a WebSocket server
-const server = http.createServer(app);
+  app.get('/health', (_req, res) => res.json({ ok: true, service: 'bitescript-rtc' }));
 
-const wss = new WebSocketServer({ server });
-
-wss.on('connection', (ws: WebSocket) => {
-  ws.on('message', (message: string) => {
-    console.log('Received message:', message);
-    ws.send(JSON.stringify({ type: 'echo', data: message.toString() }));
+  app.get('/turn', (_req, res) => {
+    //#TODO: Return ICE servers object for clients (protect in prod)
+    if (process.env.TURN_URL) {
+      return res.json({
+        iceServers: [
+          process.env.STUN_URL ? { urls: process.env.STUN_URL } : undefined,
+          {
+            urls: process.env.TURN_URL,
+            username: process.env.TURN_USER,
+            credential: process.env.TURN_PASS,
+          },
+        ].filter(Boolean),
+      });
+    }
+    return res.json({ iceServers: [] });
   });
-  ws.on('close', () => {
-    console.log('client disconnected!');
-  });
-});
 
-const port = process.env.PORT || 4000;
-server.listen(port, () => {
-  console.log(`bitescript-rtc is running on port ${port}`);
-});
+  const server = http.createServer(app);
+  const ws = createWsServer(server);
+
+  return { server, app, ws };
+}
