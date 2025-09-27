@@ -6,7 +6,7 @@ import { createServer } from './server';
 const { server } = createServer();
 const port = Number(process.env.PORT || 4000);
 
-server.listen(port, () => {
+server.listen(port, '0.0.0.0', () => {
   console.log(`🛰️  bitescript-rtc server running on http://localhost:${port}`);
   console.log(`Health check: http://localhost:${port}/health`);
 });

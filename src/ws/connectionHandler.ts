@@ -1,6 +1,11 @@
 import { WebSocket as WsWebSocket } from 'ws';
 
 export interface CustomWebSocket extends WsWebSocket {
+  isAlive?: boolean;
+  lastActivity?: number;
+  roomId?: string;
+  userId?: string;
+  clientId?: string;
   [key: string]: any;
 }
 
@@ -24,32 +29,76 @@ type RoomManagerLike = {
   broadcast: (roomId: string, message: SignalingMessage, exceptClientId?: string) => Promise<void>;
 };
 
+function generateRoomId(): string {
+  return Math.random().toString(36).substring(2, 8);
+}
+
 export async function handleConnection(
   ws: CustomWebSocket,
   req: any,
   roomManager: RoomManagerLike
 ) {
-  const params = new URL('http://x' + (req.url || '')).searchParams;
-  const token = params.get('token');
-
+  // Ensure WebSocket is in OPEN state
+  if (ws.readyState !== WebSocket.OPEN) {
+    console.error('WebSocket is not in OPEN state:', ws.readyState);
+    return;
+  }
+  const url = new URL('http://x' + (req.url || ''));
+  const token = url.searchParams.get('token') || '';
+  let roomId = url.searchParams.get('roomId') || '';
+  const userId = url.searchParams.get('userId') || '';
+  
+  // Verify JWT token first
   if (!token) {
-    sendJson(ws, { type: 'error', error: 'auth_required' });
-    ws.close(1008, 'auth required');
+    sendJson(ws, { type: 'error', error: 'auth_required', message: 'Authentication token is required' });
+    ws.close(1008, 'auth_required');
     return;
   }
 
   // Verify JWT token
   const jwtResult = verifyWsToken(token);
-  
   if (!jwtResult.ok) {
-    sendJson(ws, {
-      type: 'error',
-      error: 'invalid_token',
-      reason: jwtResult.error || 'Invalid token'
+    sendJson(ws, { 
+      type: 'error', 
+      error: 'auth_failed', 
+      message: 'Invalid or expired token',
+      details: jwtResult.error 
     });
-    ws.close(1008, 'invalid token');
+    ws.close(1008, 'auth_failed');
     return;
   }
+
+  // If roomId is provided in JWT, it takes precedence over the one in URL
+  const jwtRoomId = jwtResult.payload.roomId;
+  if (jwtRoomId) {
+    roomId = jwtRoomId;
+  }
+
+  // If no roomId is provided, generate a new one
+  const isNewRoom = !roomId;
+  if (isNewRoom) {
+    roomId = generateRoomId();
+  }
+
+  // Store room and user info on the WebSocket connection
+  ws.roomId = roomId;
+  ws.userId = userId;
+  ws.clientId = `${userId}-${Date.now()}`;
+  
+  // Send a welcome message to confirm connection is ready
+  try {
+    await sendJson(ws, {
+      type: 'connection_ready',
+      clientId: ws.clientId,
+      roomId,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Error sending welcome message:', error);
+    ws.terminate();
+    return;
+  }
+
 
   const user = {
     uid: jwtResult.payload.sub || jwtResult.payload.uid || jwtResult.payload.email || 'jwt-user',
@@ -122,7 +171,30 @@ export async function handleConnection(
     }
   });
 
-  ws.on('close', () => {
-    roomManager.removeAllByClientId(clientId).catch((e) => console.error('cleanup error', e));
+  // Handle WebSocket close event
+  ws.on('close', async () => {
+    if (!ws.roomId || !ws.clientId) return;
+    
+    try {
+      // Get the list of participants before removing the current user
+      const participants = await roomManager.listParticipants(ws.roomId);
+      
+      // Remove the user from the room
+      await roomManager.removeAllByClientId(ws.clientId);
+      
+      // Notify other participants that someone left
+      if (participants.length > 1) { // Only broadcast if there were other participants
+        await roomManager.broadcast(ws.roomId, {
+          type: 'participant_left',
+          roomId: ws.roomId,
+          userId: ws.userId || 'unknown',
+          clientId: ws.clientId,
+          participantCount: participants.length - 1
+        });
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error('Error during WebSocket close:', errorMessage);
+    }
   });
 }

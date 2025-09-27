@@ -14,6 +14,32 @@ export type ErrorEvent = {
   type: 'error';
   error: string;
   reason?: string;
+  details?: string;
+  [key: string]: any;
+};
+
+export type RoomJoinedEvent = {
+  type: 'room_joined';
+  roomId: string;
+  isNewRoom: boolean;
+  userId: string;
+  clientId: string;
+};
+
+export type ParticipantJoinedEvent = {
+  type: 'participant_joined';
+  roomId: string;
+  userId: string;
+  clientId: string;
+  participantCount: number;
+};
+
+export type ParticipantLeftEvent = {
+  type: 'participant_left';
+  roomId: string;
+  userId: string;
+  clientId: string;
+  participantCount: number;
 };
 
 export type JoinMessage = { type: 'join'; roomId: string };
@@ -58,8 +84,11 @@ export type SignalingMessage =
   | OfferMessage
   | AnswerMessage
   | IceCandidateMessage
+  | ErrorEvent
   | JoinedEvent
-  | ErrorEvent;
+  | RoomJoinedEvent
+  | ParticipantJoinedEvent
+  | ParticipantLeftEvent;
 
 export type UserTokenPayload = {
   uid: string;
