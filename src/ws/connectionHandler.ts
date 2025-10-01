@@ -47,10 +47,14 @@ export async function handleConnection(
   const token = url.searchParams.get('token') || '';
   let roomId = url.searchParams.get('roomId') || '';
   const userId = url.searchParams.get('userId') || '';
-  
+
   // Verify JWT token first
   if (!token) {
-    sendJson(ws, { type: 'error', error: 'auth_required', message: 'Authentication token is required' });
+    sendJson(ws, {
+      type: 'error',
+      error: 'auth_required',
+      message: 'Authentication token is required',
+    });
     ws.close(1008, 'auth_required');
     return;
   }
@@ -58,11 +62,11 @@ export async function handleConnection(
   // Verify JWT token
   const jwtResult = verifyWsToken(token);
   if (!jwtResult.ok) {
-    sendJson(ws, { 
-      type: 'error', 
-      error: 'auth_failed', 
+    sendJson(ws, {
+      type: 'error',
+      error: 'auth_failed',
       message: 'Invalid or expired token',
-      details: jwtResult.error 
+      details: jwtResult.error,
     });
     ws.close(1008, 'auth_failed');
     return;
@@ -84,21 +88,20 @@ export async function handleConnection(
   ws.roomId = roomId;
   ws.userId = userId;
   ws.clientId = `${userId}-${Date.now()}`;
-  
+
   // Send a welcome message to confirm connection is ready
   try {
     await sendJson(ws, {
       type: 'connection_ready',
       clientId: ws.clientId,
       roomId,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     console.error('Error sending welcome message:', error);
     ws.terminate();
     return;
   }
-
 
   const user = {
     uid: jwtResult.payload.sub || jwtResult.payload.uid || jwtResult.payload.email || 'jwt-user',
@@ -111,7 +114,6 @@ export async function handleConnection(
 
   (ws as any).clientId = clientId;
   (ws as any).uid = uid;
-
 
   // Acknowledge connection
   sendJson(ws, { type: 'connected', clientId, uid, name });
@@ -174,22 +176,23 @@ export async function handleConnection(
   // Handle WebSocket close event
   ws.on('close', async () => {
     if (!ws.roomId || !ws.clientId) return;
-    
+
     try {
       // Get the list of participants before removing the current user
       const participants = await roomManager.listParticipants(ws.roomId);
-      
+
       // Remove the user from the room
       await roomManager.removeAllByClientId(ws.clientId);
-      
+
       // Notify other participants that someone left
-      if (participants.length > 1) { // Only broadcast if there were other participants
+      if (participants.length > 1) {
+        // Only broadcast if there were other participants
         await roomManager.broadcast(ws.roomId, {
           type: 'participant_left',
           roomId: ws.roomId,
           userId: ws.userId || 'unknown',
           clientId: ws.clientId,
-          participantCount: participants.length - 1
+          participantCount: participants.length - 1,
         });
       }
     } catch (error) {
