@@ -1,0 +1,58 @@
+{
+  "type": "commonjs",
+  "name": "bitescript-rtc",
+  "version": "1.0.0",
+  "description": "Real-time communication service for BiteScript",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint . --config eslint.config.js",
+    "lint:fix": "eslint . --config eslint.config.js --fix",
+    "format": "prettier --write \"**/*.{ts,js,json,md}\"",
+    "type-check": "tsc --noEmit",
+    "prepare": "npm run build",
+    "build": "tsc",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/biteScript/bitescript-rtc.git"
+  },
+  "keywords": [
+    "webrtc",
+    "realtime",
+    "signaling",
+    "typescript"
+  ],
+  "author": "BiteScript Team",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/biteScript/bitescript-rtc/issues"
+  },
+  "homepage": "https://github.com/biteScript/bitescript-rtc#readme",
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.3.1",
+    "@typescript-eslint/eslint-plugin": "^8.43.0",
+    "@typescript-eslint/parser": "^8.43.0",
+    "eslint": "^9.35.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.4",
+    "prettier": "^3.6.2",
+    "ts-node-dev": "^2.0.0",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "firebase-admin": "^13.5.0",
+    "uuid": "^13.0.0",
+    "ws": "^8.18.3",
+    "zod": "^4.1.8"
+  }
+}
