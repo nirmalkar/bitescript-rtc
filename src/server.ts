@@ -1,4 +1,3 @@
-// serve.ts (or the file where you defined createServer)
 import express from 'express';
 import http from 'http';
 import { createWsServer } from './ws/wsServer';
