@@ -11,12 +11,11 @@
     "type-check": "tsc --noEmit",
     "check": "npm run lint && npm run type-check",
     "prepare": "npm run build",
-    "prebuild": "npm install --production=false",
-    "build": "npm run check && tsc",
-    "postbuild": "npm prune --production",
+    "build": "tsc --project tsconfig.prod.json",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "start": "node dist/index.js",
-    "ci:check": "npm run check -- --max-warnings=0"
+    "start": "NODE_ENV=production node dist/index.js",
+    "ci:check": "npm run check -- --max-warnings=0",
+    "prepublishOnly": "npm run build"
   },
   "repository": {
     "type": "git",
@@ -30,6 +29,17 @@
   ],
   "author": "BiteScript Team",
   "license": "ISC",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "package.json",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "bugs": {
     "url": "https://github.com/biteScript/bitescript-rtc/issues"
   },
@@ -52,12 +62,12 @@
     "eslint-plugin-promise": "^7.2.1",
     "globals": "^16.4.0",
     "prettier": "^3.6.2",
-    "typescript-eslint": "^8.46.0"
-  },
-  "dependencies": {
     "ts-node-dev": "^2.0.0",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0"
+  },
+  "dependencies": {
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.1",
     "compression": "^1.8.1",
