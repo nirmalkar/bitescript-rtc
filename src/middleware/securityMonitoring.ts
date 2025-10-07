@@ -157,7 +157,8 @@ export function createWebSocketRateLimitMiddleware(limiter: any) {
             userAgent: req.headers['user-agent'],
           },
         });
-        return res.status(429).json({ error: 'Too many requests, please try again later.' });
+        res.status(429).json({ error: 'Too many requests, please try again later.' });
+        return;
       }
       next();
     });

@@ -111,11 +111,11 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
       return defaultLimiter(req, res, next);
     }
     // Skip rate limiting for other routes (e.g., static files)
-    next();
+    return next();
   };
 
   // WebSocket connection limiter middleware
-  const wsConnectionLimiter = (req: Request, res: Response, next: NextFunction) => {
+  const wsConnectionLimiter = (req: Request, res: Response, next: NextFunction): void => {
     // Only apply to WebSocket upgrade requests
     if (req.headers.upgrade === 'websocket') {
       const ip = req.ip || req.socket.remoteAddress || 'unknown';
@@ -144,10 +144,11 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
           attempts: attempts.count,
         });
 
-        return res.status(429).json({
+        res.status(429).json({
           error: 'Too many connection attempts',
           retryAfter: Math.ceil((attempts.lastAttempt + 60000 - now) / 1000),
         });
+        return;
       }
 
       // Update attempt counter
@@ -166,10 +167,11 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
           maxConnections: MAX_WS_CONNECTIONS_PER_IP,
         });
 
-        return res.status(429).json({
+        res.status(429).json({
           error: 'Too many WebSocket connections',
           retryAfter: 300, // 5 minutes in seconds
         });
+        return;
       }
 
       // Log new connection
@@ -264,9 +266,9 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
     }),
 
     // Disable X-Powered-By header
-    (req: Request, res: Response, next: NextFunction) => {
+    (_req: Request, res: Response, next: NextFunction) => {
       res.removeHeader('X-Powered-By');
-      next();
+      return next();
     },
 
     // Apply CORS
@@ -277,7 +279,7 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
       if (req.path.startsWith('/api/')) {
         return apiLimiter(req, res, next);
       }
-      next();
+      return next();
     },
   ];
 }
