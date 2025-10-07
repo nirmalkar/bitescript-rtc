@@ -1,14 +1,19 @@
 import { IncomingMessage } from 'http';
-import { WebSocketServer as WSS } from 'ws';
+import { Socket } from 'net';
 import { URL } from 'url';
+
+import { WebSocketServer as WSS, WebSocket } from 'ws';
+
 import { verifyWsToken } from '../../auth/jwt';
 import logger from '../../utils/logger';
 
-export function createUpgradeHandler(opts: { wss: WSS; allowedOrigins: string[] }) {
+type UpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer) => void;
+
+export function createUpgradeHandler(opts: { wss: WSS; allowedOrigins: string[] }): UpgradeHandler {
   const { wss, allowedOrigins } = opts;
 
-  return (req: IncomingMessage, socket: any, head: Buffer) => {
-    (async () => {
+  return (req: IncomingMessage, socket: Socket, head: Buffer): void => {
+    (async (): Promise<void> => {
       const origin = (req.headers.origin as string) || '';
       const requestIp = req.socket.remoteAddress || 'unknown';
       const isDevelopment = process.env.NODE_ENV !== 'production';
@@ -68,35 +73,48 @@ export function createUpgradeHandler(opts: { wss: WSS; allowedOrigins: string[] 
           }
         }
 
-        wss.handleUpgrade(req, socket as any, head, (ws) => {
-          // initialize some basic fields on the socket so connection handler can use them
+        wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
+          const client = ws as WebSocket & {
+            id?: string;
+            userId?: string | null;
+            isAlive?: boolean;
+            ip?: string;
+            userAgent?: string;
+            origin?: string;
+            roomId?: string | null;
+          };
+
           try {
-            const client = ws as any;
-            client.id = userId || client.id;
-            client.userId = userId ?? undefined;
+            client.id = userId || client.id || Math.random().toString(36).substring(2, 10);
+            client.userId = userId || null;
             client.isAlive = true;
             client.ip = requestIp;
             client.userAgent = (req.headers['user-agent'] as string) || 'unknown';
             client.origin = origin;
             client.roomId = roomId || null;
           } catch (e) {
-            // ignore
             logger.debug('Error setting preliminary client fields: %o', e);
           }
+
           wss.emit('connection', ws, req);
         });
       } catch (err) {
         logger.error('Error during WebSocket upgrade: %o', err);
         try {
           socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
-        } catch {}
-        socket.destroy();
+        } catch (e) {
+          logger.debug('Error writing error response to socket: %o', e);
+        } finally {
+          socket.destroy();
+        }
       }
     })().catch((err) => {
       logger.error('Unexpected error in upgrade handler: %o', err);
       try {
         socket.write('HTTP/1.1 500 Internal Server Error\r\n\r\n');
-      } catch {}
+      } catch {
+        // Ignore errors when trying to write to a potentially closed socket
+      }
       socket.destroy();
     });
   };

@@ -1,16 +1,51 @@
-import http from 'http';
-import { v4 as uuidv4 } from 'uuid';
-import { WebSocket, WebSocketServer as WSS } from 'ws';
+import { Server as HttpServer, IncomingMessage } from 'http';
+import { Socket } from 'net';
+
+import WebSocket from 'ws';
+
 import { InMemoryRoomManager } from '../rooms/inMemoryRooms';
-import { createUpgradeHandler } from './handlers/upgradeHandler';
-import { handleConnection } from './handlers/connection';
-import { WebSocketClient, RoomDoc, DEFAULT_ALLOWED_ORIGINS } from '../types/webSocket';
+import {
+  DEFAULT_ALLOWED_ORIGINS,
+  RoomDoc as SharedRoomDoc,
+  WebSocketClient as SharedWebSocketClient,
+} from '../types/webSocket';
 import logger from '../utils/logger';
 
-export function createWsServer(server: http.Server) {
-  const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
-    : DEFAULT_ALLOWED_ORIGINS;
+import { handleConnection } from './handlers/connection';
+import { createUpgradeHandler } from './handlers/upgradeHandler';
+
+const { v4: uuidv4 } = require('uuid');
+
+interface WebSocketClient extends SharedWebSocketClient, WebSocket {}
+
+const WSS = WebSocket.Server;
+
+const asSocket = (socket: unknown): Socket => {
+  return socket as InstanceType<typeof Socket>;
+};
+
+const asWebSocketClient = (ws: WebSocket): WebSocketClient => {
+  const client = ws as WebSocketClient;
+  if (!client.id) {
+    client.id = uuidv4();
+    client.isAlive = true;
+  }
+  return client;
+};
+
+export interface WsServer {
+  close: () => Promise<void>;
+}
+
+export function createWsServer(server: HttpServer): WsServer {
+  // Initialize allowed origins from environment or use defaults
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((o: string) => (o || '').trim())
+    .filter(Boolean);
+
+  // Use allowedOrigins if not empty, otherwise use DEFAULT_ALLOWED_ORIGINS
+  const originsToUse = allowedOrigins.length > 0 ? allowedOrigins : DEFAULT_ALLOWED_ORIGINS;
 
   const wss = new WSS({
     noServer: true,
@@ -32,18 +67,31 @@ export function createWsServer(server: http.Server) {
     },
   });
 
-  const instanceId = uuidv4();
   const roomManager = new InMemoryRoomManager();
   const activeConnections = new Set<WebSocketClient>();
-  const rooms = new Map<string, RoomDoc>();
+  const rooms = new Map<string, SharedRoomDoc>();
+
+  const instanceId = uuidv4();
 
   // Wire upgrade handler (delegates auth & wss.handleUpgrade)
-  server.on('upgrade', createUpgradeHandler({ wss, allowedOrigins }));
+  server.on('upgrade', (request, socket, head) => {
+    try {
+      const upgradeHandler = createUpgradeHandler({ wss, allowedOrigins: originsToUse });
+      // The upgrade handler is responsible for handling the upgrade request
+      // and calling wss.handleUpgrade() when appropriate
+      upgradeHandler(request, asSocket(socket), head);
+    } catch (error) {
+      logger.error('Unexpected error in upgrade handler: %o', error);
+      if (!socket.destroyed) {
+        socket.destroy();
+      }
+    }
+  });
 
-  // Wire connection event to connection handler, passing shared context
-  wss.on('connection', (ws, req) => {
-    // do not await; connection handler manages its own async cleanup
-    void handleConnection(ws as any, req as any, {
+  // Handle new connections
+  wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
+    const client = asWebSocketClient(ws);
+    void handleConnection(client, request, {
       wss,
       rooms,
       roomManager,
@@ -53,41 +101,64 @@ export function createWsServer(server: http.Server) {
     });
   });
 
-  wss.on('error', (err) => {
+  wss.on('error', (err: Error) => {
     logger.error('WebSocketServer error: %o', err);
   });
 
-  return {
-    wss,
-    roomManager,
-    instanceId,
-    close: async () => {
-      for (const client of Array.from(activeConnections)) {
-        try {
-          if (client.readyState === WebSocket.OPEN) {
-            client.close(1001, 'Server shutting down');
-          } else {
-            try {
-              client.terminate();
-            } catch {}
-          }
-        } catch (err) {
-          logger.warn('Error closing client: %o', err);
-        } finally {
-          activeConnections.delete(client);
-        }
-      }
+  const closeServer = async (): Promise<void> => {
+    logger.info('Closing WebSocket server...');
 
-      return new Promise<void>((resolve, reject) => {
-        wss.close((error) => {
+    // Add a small delay to allow pending operations to complete
+    await new Promise((_resolve) => {
+      setTimeout(_resolve, 100);
+    });
+
+    // Close all active connections
+    const closePromises = Array.from(activeConnections).map(async (client): Promise<void> => {
+      try {
+        if (client.readyState === WebSocket.OPEN) {
+          await new Promise<void>((_resolve) => {
+            client.once('close', _resolve);
+            client.close(1001, 'Server shutting down');
+          });
+        } else {
+          client.terminate();
+        }
+      } catch (error) {
+        logger.warn('Error closing client connection: %o', error);
+      } finally {
+        activeConnections.delete(client);
+      }
+    });
+
+    try {
+      // Create a timeout promise
+      const timeoutPromise = new Promise((_resolve) => {
+        setTimeout(_resolve, 5000, 'timeout');
+      });
+
+      // Wait for all connections to close or timeout after 5 seconds
+      await Promise.race([Promise.all(closePromises), timeoutPromise]);
+
+      // Close the WebSocket server
+      await new Promise<void>((_resolve, _reject) => {
+        wss.close((error?: Error) => {
           if (error) {
             logger.error('Error closing WebSocket server: %o', error);
-            reject(error);
+            _reject(error);
           } else {
-            resolve();
+            logger.info('WebSocket server closed successfully');
+            _resolve();
           }
         });
       });
-    },
+    } catch (error) {
+      logger.error('Error during WebSocket server shutdown: %o', error);
+      throw error;
+    }
+  };
+
+  return {
+    close: closeServer,
   };
 }

@@ -1,6 +1,11 @@
-import { Request, Response, NextFunction } from 'express-serve-static-core';
+// Core Node.js modules
 import { IncomingHttpHeaders } from 'http';
-import { logger } from '../utils/logger';
+
+// Third-party modules
+import type { Request, Response, NextFunction } from 'express';
+
+// Internal modules
+import logger from '../utils/logger';
 
 type SecurityContext = {
   method: string;
@@ -8,29 +13,35 @@ type SecurityContext = {
   ip?: string;
   userId?: string;
   requestId: string;
-  userAgent?: string;
+  userAgent?: string | IncomingHttpHeaders['user-agent'];
 };
 
 interface CustomRequest extends Request {
   user?: {
     id?: string;
-    [key: string]: any;
+    [key: string]: unknown;
   };
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
-export function securityMonitoringMiddleware(req: CustomRequest, res: Response, next: NextFunction): void {
+export function securityMonitoringMiddleware(
+  req: CustomRequest,
+  res: Response,
+  next: NextFunction
+): void {
   const start = Date.now();
   const requestId =
-    req.headers['x-request-id']?.toString() || Math.random().toString(36).substring(2, 9);
+    typeof req.headers['x-request-id'] === 'string'
+      ? req.headers['x-request-id']
+      : Math.random().toString(36).substring(2, 9);
 
   // Create security context for logging
   const securityContext: SecurityContext = {
     method: req.method,
     path: req.path,
-    ip: req.ip || req.connection.remoteAddress?.toString() || undefined,
+    ip: req.ip || (req.connection && req.connection.remoteAddress) || undefined,
     userAgent: req.headers['user-agent'],
-    userId: (req as any).user?.id || 'anonymous',
+    userId: (req.user && req.user.id) || 'anonymous',
     requestId,
   };
 
@@ -42,22 +53,23 @@ export function securityMonitoringMiddleware(req: CustomRequest, res: Response, 
 
   // Log authentication attempts
   if (isAuthPath(req.path)) {
+    // mark attempt; successful auth should update this later
     logger.logAuthAttempt(
-      false, // Will be updated when auth is successful
+      false,
       'Authentication attempt',
       { path: req.path, method: req.method },
       securityContext
     );
   }
 
-  // Response monitoring
-  const originalSend = res.send;
-  res.send = function (body: any): Response {
+  // Response monitoring — wrap send to capture body & timing
+  const originalSend = res.send.bind(res);
+   
+  res.send = function (body?: unknown): Response {
     const responseTime = Date.now() - start;
 
-    // Log slow responses
+    // Log slow responses (> 1s)
     if (responseTime > 1000) {
-      // More than 1 second
       logger.warn('Slow response detected', {
         ...securityContext,
         responseTime: `${responseTime}ms`,
@@ -65,26 +77,33 @@ export function securityMonitoringMiddleware(req: CustomRequest, res: Response, 
       });
     }
 
-    // Log error responses
+    // Log error responses (>= 400)
     if (res.statusCode >= 400) {
+      const safeBody =
+        typeof body === 'string'
+          ? body.substring(0, 500)
+          : typeof body === 'object'
+            ? JSON.stringify(body).substring(0, 500)
+            : 'Response body not logged';
       logger.error('Error response', {
         ...securityContext,
         statusCode: res.statusCode,
-        response:
-          typeof body === 'string' ? body.substring(0, 500) : 'Response body too large to log',
+        response: safeBody,
       });
     }
 
-    return originalSend.apply(res, arguments as any);
+    // call original send
+    // `originalSend` expects unknown typed body; use as unknown
+    return originalSend(body as any);
   };
 
   next();
 }
 
-function monitorSuspiciousHeaders(
+export function monitorSuspiciousHeaders(
   headers: IncomingHttpHeaders,
   context: SecurityContext
-) {
+): void {
   const suspiciousHeaders = [
     'x-forwarded-for',
     'x-real-ip',
@@ -113,8 +132,8 @@ function monitorSuspiciousHeaders(
   }
 }
 
-function monitorAttackPatterns(req: Request, context: SecurityContext) {
-  const attackPatterns = [
+export function monitorAttackPatterns(req: Request, context: SecurityContext): void {
+  const attackPatterns: Array<{ pattern: RegExp; name: string }> = [
     { pattern: /<script[^>]*>.*<\/script>/gi, name: 'HTML Injection' },
     {
       pattern: /\b(?:union\s+select|select\s+\*\s+from|drop\s+table|1=1|\/\*.*\*\/)/gi,
@@ -125,10 +144,29 @@ function monitorAttackPatterns(req: Request, context: SecurityContext) {
         /\b(?:eval\(|setTimeout\(|setInterval\(|Function\(|document\.|window\.|location\.)/gi,
       name: 'JavaScript Injection',
     },
-    { pattern: /\b(?:\$\{.*\}|\$\{.*\}|\$\{.*\})/gi, name: 'Template Injection' },
+    { pattern: /\$\{[^}]+\}/gi, name: 'Template Injection' },
   ];
 
-  const requestString = `${req.method} ${req.path} ${JSON.stringify(req.query)} ${JSON.stringify(req.body)}`;
+  const queryString = ((): string => {
+    try {
+      return JSON.stringify(req.query);
+    } catch {
+      return String(req.query);
+    }
+  })();
+
+  const bodyString = ((): string => {
+    try {
+      // don't stringify huge bodies
+      const s = JSON.stringify((req as unknown as { body?: unknown }).body);
+      return s.length > 1000 ? s.substring(0, 1000) : s;
+    } catch {
+      return 'unserializable';
+    }
+  })();
+
+  const requestString = `${req.method} ${req.path} ${queryString} ${bodyString}`;
+
   const detectedAttacks = attackPatterns
     .filter(({ pattern }) => pattern.test(requestString))
     .map(({ name }) => name);
@@ -149,27 +187,42 @@ function monitorAttackPatterns(req: Request, context: SecurityContext) {
   }
 }
 
-function isAuthPath(path: string): boolean {
+export function isAuthPath(path: string): boolean {
   const authPaths = ['/auth', '/login', '/signin', '/register', '/signup'];
   return authPaths.some((authPath) => path.includes(authPath));
 }
 
-export function createWebSocketRateLimitMiddleware(limiter: any) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    limiter.limit(req.ip || req.connection.remoteAddress, (err: any) => {
-      if (err) {
-        logger.logSuspiciousActivity({
-          message: 'WebSocket rate limit exceeded',
-          metadata: {
-            ip: req.ip || req.connection.remoteAddress,
-            path: req.path,
-            userAgent: req.headers['user-agent'],
-          },
-        });
-        res.status(429).json({ error: 'Too many requests, please try again later.' });
-        return;
+type LimiterLike = {
+  limit: (ip: string | undefined, cb: (err?: unknown) => void) => void;
+};
+
+export function createWebSocketRateLimitMiddleware(limiter: LimiterLike) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    limiter.limit(
+      req.ip || (req.connection && req.connection.remoteAddress) || undefined,
+      (err?: unknown) => {
+        if (err) {
+          logger.logSuspiciousActivity(
+            {
+              message: 'WebSocket rate limit exceeded',
+              metadata: {
+                ip: req.ip || (req.connection && req.connection.remoteAddress),
+                path: req.path,
+                userAgent: req.headers['user-agent'],
+              },
+            },
+            {
+              method: req.method,
+              path: req.path,
+              requestId: req.headers['x-request-id']?.toString() || 'unknown',
+            } as SecurityContext
+          );
+
+          res.status(429).json({ error: 'Too many requests, please try again later.' });
+          return;
+        }
+        next();
       }
-      next();
-    });
+    );
   };
 }

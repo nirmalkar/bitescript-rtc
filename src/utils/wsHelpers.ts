@@ -1,4 +1,6 @@
 import { WebSocket as WS } from 'ws';
+
+import logger from './logger';
 import { PeerInfo, WebSocketClient, RoomDoc } from '../types/webSocket'; // adjust path if needed
 
 export function getOrCreateRoom(rooms: Map<string, RoomDoc>, roomId: string): RoomDoc {
@@ -39,7 +41,7 @@ export function getPeers(
 export function broadcastPeersUpdate(
   activeConnections: Set<WebSocketClient>,
   roomId?: string | null
-) {
+): void {
   const peers = getPeers(activeConnections, roomId);
   const total = peers.length;
 
@@ -65,41 +67,52 @@ export function broadcastPeersUpdate(
         })
       );
     } catch (err) {
-      console.warn('Failed to send peers-updated to', client.id, err);
+      logger.warn('Failed to send peers-updated to %s: %o', client.id, err);
     }
   }
 }
 
-export function sendToClient(client: WebSocketClient, msg: any) {
+export function sendToClient(client: WebSocketClient, msg: unknown): void {
   if (client.readyState !== WS.OPEN) return;
   try {
-    client.send(JSON.stringify(msg));
-  } catch (e) {
-    // swallow send error
+    const s = JSON.stringify(msg);
+    client.send(s);
+  } catch (err) {
+    logger.warn('sendToClient failed for %s: %o', client.id, err);
+    // swallow send error but log for visibility
   }
 }
 
 export function broadcastToRoom(
   rooms: Map<string, RoomDoc>,
   roomId: string,
-  msg: any,
+  msg: unknown,
   except?: WebSocketClient
-) {
+): void {
   const room = rooms.get(roomId);
   if (!room) return;
-  const s = JSON.stringify(msg);
+
+  let s: string;
+  try {
+    s = JSON.stringify(msg);
+  } catch (err) {
+    logger.warn('broadcastToRoom: failed to stringify message for room %s: %o', roomId, err);
+    return;
+  }
+
   for (const c of room.clients) {
     if (c !== except && c.readyState === WS.OPEN) {
       try {
         c.send(s);
-      } catch (e) {
-        // ignore per-client send error
+      } catch (err) {
+        logger.warn('broadcastToRoom: failed to send to %s in room %s: %o', c.id, roomId, err);
+        // ignore per-client send error but log it
       }
     }
   }
 }
 
-export function removeClientFromRoom(rooms: Map<string, RoomDoc>, client: WebSocketClient) {
+export function removeClientFromRoom(rooms: Map<string, RoomDoc>, client: WebSocketClient): void {
   const roomId = client.roomId;
   if (!roomId) return;
   const room = rooms.get(roomId);

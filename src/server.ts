@@ -1,20 +1,30 @@
-import express from 'express';
-import type { Request, Response } from 'express-serve-static-core';
 import http from 'http';
-import compression from 'compression';
-import { createWsServer } from './ws/wsServer';
-import { signWsToken } from './auth/jwt';
-import { config } from './configuration';
-import { createSecurityMiddleware } from './middleware/security';
 
-export function createServer() {
+import compression from 'compression';
+import express from 'express';
+import type { Request, Response } from 'express';
+
+import { config } from './configuration';
+import { signWsToken } from './auth/jwt';
+import createSecurityMiddleware from './middleware/security';
+import { createWsServer } from './ws/wsServer';
+
+interface ServerWithShutdown extends http.Server {
+  shutdown?: () => Promise<void>;
+}
+
+interface ServerReturnType {
+  app: express.Express;
+  server: ServerWithShutdown;
+  wsServer: ReturnType<typeof createWsServer>;
+}
+
+export function createServer(): ServerReturnType {
   const app = express();
 
-  // Apply security middleware with config
   const securityMiddleware = createSecurityMiddleware(config);
   app.use(securityMiddleware);
 
-  // Enable JSON body parsing with size limit
   app.use(express.json({ limit: '10kb' }));
 
   // Enable compression
@@ -26,7 +36,7 @@ export function createServer() {
 
   // Return ICE servers object for clients (protect in prod)
   app.get('/api/turn', (_req: Request, res: Response) => {
-    const iceServers = [];
+    const iceServers: Array<Record<string, unknown>> = [];
 
     // Add STUN server if configured
     if (config.turn.stunUrl) {
@@ -83,8 +93,8 @@ export function createServer() {
     }
   });
 
-  const server = http.createServer(app);
-  const ws = createWsServer(server);
+  const server: ServerWithShutdown = http.createServer(app) as ServerWithShutdown;
+  const wsServer = createWsServer(server);
 
-  return { server, app, ws };
+  return { app, server, wsServer };
 }

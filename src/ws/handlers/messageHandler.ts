@@ -11,7 +11,11 @@ type Ctx = {
   logger: typeof logger;
 };
 
-export async function handleMessage(args: { message: any; ws: WebSocketClient; ctx: Ctx }) {
+export async function handleMessage(args: {
+  message: any;
+  ws: WebSocketClient;
+  ctx: Ctx;
+}): Promise<void> {
   const { message, ws, ctx } = args;
   const { rooms, roomManager, activeConnections } = ctx;
 
