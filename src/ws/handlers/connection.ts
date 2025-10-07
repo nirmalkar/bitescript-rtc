@@ -106,7 +106,8 @@ export async function handleConnection(wsRaw: WS, req: IncomingMessage, ctx: Ctx
     // notify peers
     try {
       // broadcastPeersUpdate imported inside handler to avoid circular import
-      const { broadcastPeersUpdate } = await import('../../utils/wsHelpers');
+      // eslint-disable-next-line import/no-unresolved
+      const { broadcastPeersUpdate } = await import('../../utils/wsHelpers.js');
       broadcastPeersUpdate(activeConnections, prevRoom);
     } catch (err) {
       logger.warn('broadcastPeersUpdate failed in cleanup: %o', err);
@@ -236,7 +237,8 @@ export async function handleConnection(wsRaw: WS, req: IncomingMessage, ctx: Ctx
       logger.error('Error handling message', errorContext);
 
       try {
-        const { sendToClient } = await import('../../utils/wsHelpers');
+        // eslint-disable-next-line import/no-unresolved
+        const { sendToClient } = await import('../../utils/wsHelpers.js');
         sendToClient(ws, {
           type: 'error',
           from: 'server',
@@ -257,7 +259,8 @@ export async function handleConnection(wsRaw: WS, req: IncomingMessage, ctx: Ctx
   // send initial connected message + peers
   try {
     if (ws.readyState === (WS as any).OPEN) {
-      const { getPeers } = await import('../../utils/wsHelpers');
+      // eslint-disable-next-line import/no-unresolved
+      const { getPeers } = await import('../../utils/wsHelpers.js');
       ws.send(
         JSON.stringify({
           type: 'connected',
@@ -277,7 +280,8 @@ export async function handleConnection(wsRaw: WS, req: IncomingMessage, ctx: Ctx
 
   // broadcast peers update
   try {
-    const { broadcastPeersUpdate } = await import('../../utils/wsHelpers');
+    // eslint-disable-next-line import/no-unresolved
+    const { broadcastPeersUpdate } = await import('../../utils/wsHelpers.js');
     broadcastPeersUpdate(activeConnections, ws.roomId ?? null);
   } catch (err: unknown) {
     logger.warn('broadcastPeersUpdate failed after connect: %o', err);

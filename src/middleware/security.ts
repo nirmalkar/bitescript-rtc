@@ -1,7 +1,7 @@
 import cors, { CorsOptions } from 'cors';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
-import type { Request, Response, NextFunction, RequestHandler } from 'express';
+import type { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
 
 import type { Config } from '../configuration';
 import { logger } from '../utils/logger';

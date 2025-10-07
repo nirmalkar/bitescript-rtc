@@ -24,7 +24,8 @@ export async function handleMessage(args: {
   const to = message.to ?? payload?.to;
 
   // Lazy import helpers to avoid circular import issues
-  const helpers = await import('../../utils/wsHelpers');
+  // eslint-disable-next-line import/no-unresolved
+  const helpers = await import('../../utils/wsHelpers.js');
   const {
     getOrCreateRoom,
     sendToClient,
