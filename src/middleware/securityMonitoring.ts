@@ -1,4 +1,5 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express-serve-static-core';
+import { IncomingHttpHeaders } from 'http';
 import { logger } from '../utils/logger';
 
 type SecurityContext = {
@@ -10,7 +11,15 @@ type SecurityContext = {
   userAgent?: string;
 };
 
-export function securityMonitoringMiddleware(req: Request, res: Response, next: NextFunction) {
+interface CustomRequest extends Request {
+  user?: {
+    id?: string;
+    [key: string]: any;
+  };
+  [key: string]: any;
+}
+
+export function securityMonitoringMiddleware(req: CustomRequest, res: Response, next: NextFunction): void {
   const start = Date.now();
   const requestId =
     req.headers['x-request-id']?.toString() || Math.random().toString(36).substring(2, 9);
@@ -73,7 +82,7 @@ export function securityMonitoringMiddleware(req: Request, res: Response, next: 
 }
 
 function monitorSuspiciousHeaders(
-  headers: { [key: string]: string | string[] | undefined },
+  headers: IncomingHttpHeaders,
   context: SecurityContext
 ) {
   const suspiciousHeaders = [

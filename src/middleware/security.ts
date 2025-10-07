@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction, RequestHandler } from 'express';
+import { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
 import helmet from 'helmet';
 import cors, { CorsOptions } from 'cors';
 import rateLimit from 'express-rate-limit';
@@ -76,6 +76,9 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100, // limit each IP to 100 requests per windowMs
     standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+    handler: (req: Request, res: Response) => {
+      res.status(429).json({ error: 'Too many requests, please try again later.' });
+    },
     legacyHeaders: false, // Disable the `X-RateLimit-*` headers
     message: { error: 'Too many requests, please try again later.' },
     skip: (req) => {
@@ -101,7 +104,7 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
   });
 
   // Apply rate limiting based on path
-  const rateLimiter: RequestHandler = (req, res, next) => {
+  const rateLimiter: RequestHandler = (req: Request, res: Response, next: NextFunction) => {
     // Apply stricter limits to auth endpoints
     if (req.path.startsWith('/api/auth/')) {
       return authLimiter(req, res, next);
