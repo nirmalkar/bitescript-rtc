@@ -11,7 +11,9 @@
     "type-check": "tsc --noEmit",
     "check": "npm run lint && npm run type-check",
     "prepare": "npm run build",
+    "prebuild": "npm install --production=false",
     "build": "npm run check && tsc",
+    "postbuild": "npm prune --production",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "start": "node dist/index.js",
     "ci:check": "npm run check -- --max-warnings=0"
@@ -50,12 +52,12 @@
     "eslint-plugin-promise": "^7.2.1",
     "globals": "^16.4.0",
     "prettier": "^3.6.2",
-    "ts-node-dev": "^2.0.0",
-    "tsconfig-paths": "^4.2.0",
-    "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.0"
   },
   "dependencies": {
+    "ts-node-dev": "^2.0.0",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3",
     "@types/uuid": "^10.0.0",
     "@types/ws": "^8.18.1",
     "compression": "^1.8.1",
