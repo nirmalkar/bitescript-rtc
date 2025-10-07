@@ -4,6 +4,17 @@ import { startHeartbeat } from './heartbeat';
 import { handleMessage } from './messageHandler';
 import { safeParse } from '../../utils/safeParse';
 import logger from '../../utils/logger';
+import { RateLimiterMemory } from 'rate-limiter-flexible';
+
+// Message rate limiting configuration
+const messageRateLimiter = new RateLimiterMemory({
+  points: 100, // 100 messages
+  duration: 10, // per 10 seconds per client
+  blockDuration: 60, // block for 1 minute if limit is exceeded
+});
+
+// Track message rates per client
+const clientMessageRates = new Map<string, number>();
 
 type Ctx = {
   wss: any;
@@ -97,38 +108,54 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
     void cleanup();
   });
 
-  // message handler delegates to messageHandler.js (keeps logic same)
+  // Message handler with rate limiting and error handling
   ws.on('message', async (data: RawData, isBinary: boolean) => {
-    // Use safeParse here to keep behavior consistent (messageHandler expects parsed message)
-    const strOrBuffer = isBinary ? data : data.toString();
-    const message = safeParse<any>(strOrBuffer as any);
+    try {
+      // Parse the incoming message
+      const strOrBuffer = isBinary ? data : data.toString();
+      const message = safeParse<any>(strOrBuffer as any);
 
-    if (!message) {
+      if (!message) {
+        throw new Error('Invalid message format');
+      }
+
+      // Apply rate limiting
+      try {
+        await messageRateLimiter.consume(ws.id);
+      } catch (rateLimiterRes) {
+        logger.warn('Rate limit exceeded for client %s', ws.id);
+        ws.send(JSON.stringify({
+          type: 'error',
+          from: 'server',
+          error: 'Rate limit exceeded. Please try again later.'
+        }));
+        return;
+      }
+
+      // Track message rate for analytics
+      const messageCount = (clientMessageRates.get(ws.id) || 0) + 1;
+      clientMessageRates.set(ws.id, messageCount);
+
+      // Process the message
+      await handleMessage({ ws, message, ctx });
+    } catch (error) {
+      logger.error('Error handling message: %o', error);
       try {
         const { sendToClient } = await import('../../utils/wsHelpers');
         sendToClient(ws, {
           type: 'error',
           from: 'server',
-          payload: { message: 'Invalid or too large JSON message' },
+          payload: { message: 'Error processing message' },
         });
-      } catch {}
-      return;
+      } catch (e) {
+        logger.warn('Failed to send error to client: %o', e);
+      }
     }
+  });
 
-    try {
-      await handleMessage({ message, ws, ctx: { ...ctx } });
-    } catch (err) {
-      logger.error('message handling error for %s: %o', ws.id, err);
-      try {
-        ws.send(
-          JSON.stringify({
-            type: 'error',
-            payload: { message: 'Server error processing message' },
-            from: 'server',
-          })
-        );
-      } catch {}
-    }
+  // Clean up rate limiting on disconnect
+  ws.on('close', () => {
+    clientMessageRates.delete(ws.id);
   });
 
   // send initial connected message + peers
