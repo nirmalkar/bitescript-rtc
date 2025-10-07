@@ -41,6 +41,7 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
     (req.url ? new URL(req.url, `http://${req.headers.host}`).searchParams.get('roomId') : null);
 
   activeConnections.add(ws);
+  logger.info('New WebSocket connection', { clientId: ws.id, userId: ws.userId });
 
   // heartbeat
   const stopHeartbeat = startHeartbeat(ws as any, {
@@ -78,10 +79,17 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
 
   // cleanup routine
   const cleanup = async () => {
+    const prevRoom = ws.roomId ?? null;
+    logger.debug('Starting cleanup for connection', { clientId: ws.id, roomId: prevRoom });
+
     try {
       stopHeartbeat();
-    } catch {}
-    const prevRoom = ws.roomId ?? null;
+    } catch (error) {
+      logger.warn('Error stopping heartbeat', {
+        clientId: ws.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     activeConnections.delete(ws);
     // notify peers
     try {
@@ -100,16 +108,24 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
   };
 
   ws.on('close', () => {
+    logger.info('WebSocket connection closed', { clientId: ws.id });
     void cleanup();
   });
 
   ws.on('error', (err) => {
-    logger.warn('WebSocket client error %s: %o', ws.id, err);
+    logger.error('WebSocket client error', {
+      clientId: ws.id,
+      error: err.message,
+      stack: err.stack,
+    });
     void cleanup();
   });
 
   // Message handler with rate limiting and error handling
   ws.on('message', async (data: RawData, isBinary: boolean) => {
+    const startTime = Date.now();
+    let messageType = 'unknown';
+
     try {
       // Parse the incoming message
       const strOrBuffer = isBinary ? data : data.toString();
@@ -119,16 +135,52 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
         throw new Error('Invalid message format');
       }
 
+      messageType = message.type || 'unknown';
+      logger.debug('Processing message', {
+        clientId: ws.id,
+        messageType,
+        isBinary,
+        size: data,
+      });
+
       // Apply rate limiting
       try {
+        const rateLimit = await messageRateLimiter.get(ws.id);
+        if (rateLimit && rateLimit.consumedPoints > 90) {
+          logger.debug('Approaching rate limit', {
+            clientId: ws.id,
+            consumed: rateLimit.consumedPoints,
+            remaining: rateLimit.remainingPoints,
+          });
+        }
+
         await messageRateLimiter.consume(ws.id);
       } catch (rateLimiterRes) {
-        logger.warn('Rate limit exceeded for client %s', ws.id);
-        ws.send(JSON.stringify({
-          type: 'error',
-          from: 'server',
-          error: 'Rate limit exceeded. Please try again later.'
-        }));
+        const rateLimitInfo = rateLimiterRes as { msBeforeNext?: number; remainingPoints?: number };
+        logger.warn('Rate limit exceeded', {
+          clientId: ws.id,
+          messageType,
+          remainingMs: rateLimitInfo.msBeforeNext || 0,
+          remainingPoints: rateLimitInfo.remainingPoints || 0,
+        });
+
+        try {
+          ws.send(
+            JSON.stringify({
+              type: 'error',
+              from: 'server',
+              error: 'Rate limit exceeded. Please try again later.',
+              retryAfter: rateLimitInfo.msBeforeNext
+                ? Math.ceil(rateLimitInfo.msBeforeNext / 1000)
+                : 60,
+            })
+          );
+        } catch (sendError: any) {
+          logger.warn('Failed to send rate limit error to client', {
+            clientId: ws.id,
+            error: sendError.message,
+          });
+        }
         return;
       }
 
@@ -136,19 +188,50 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
       const messageCount = (clientMessageRates.get(ws.id) || 0) + 1;
       clientMessageRates.set(ws.id, messageCount);
 
+      if (messageCount % 10 === 0) {
+        logger.debug('Message rate update', {
+          clientId: ws.id,
+          messageCount,
+          messageType,
+        });
+      }
+
       // Process the message
+      const processStart = Date.now();
       await handleMessage({ ws, message, ctx });
+
+      logger.debug('Message processed', {
+        clientId: ws.id,
+        messageType,
+        durationMs: Date.now() - processStart,
+        totalDurationMs: Date.now() - startTime,
+      });
     } catch (error) {
-      logger.error('Error handling message: %o', error);
+      const errorContext = {
+        clientId: ws.id,
+        messageType,
+        durationMs: Date.now() - startTime,
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      };
+
+      logger.error('Error handling message', errorContext);
+
       try {
         const { sendToClient } = await import('../../utils/wsHelpers');
         sendToClient(ws, {
           type: 'error',
           from: 'server',
-          payload: { message: 'Error processing message' },
+          payload: {
+            message: 'Error processing message',
+            requestId: Math.random().toString(36).substring(2, 10),
+          },
         });
-      } catch (e) {
-        logger.warn('Failed to send error to client: %o', e);
+      } catch (sendError: any) {
+        logger.warn('Failed to send error to client', {
+          ...errorContext,
+          sendError: sendError.message,
+        });
       }
     }
   });
