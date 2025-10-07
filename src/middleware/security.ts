@@ -1,12 +1,13 @@
-import { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
-import helmet from 'helmet';
 import cors, { CorsOptions } from 'cors';
 import rateLimit from 'express-rate-limit';
+import helmet from 'helmet';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
+
 import type { Config } from '../configuration';
-import { securityMonitoringMiddleware } from './securityMonitoring';
 import { logger } from '../utils/logger';
 
-// Track WebSocket connection attempts and active connections
+import { securityMonitoringMiddleware } from './securityMonitoring';
+
 interface ConnectionAttempt {
   count: number;
   lastAttempt: number;
@@ -15,20 +16,9 @@ interface ConnectionAttempt {
 const connectionAttempts = new Map<string, ConnectionAttempt>();
 const wsConnections = new Map<string, number>();
 
-// Configuration for WebSocket rate limiting and connection tracking
-const MAX_WS_CONNECTIONS_PER_IP = 5; // Maximum concurrent WebSocket connections per IP
-
-// API Rate Limiter configuration
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again after 15 minutes',
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-});
+const MAX_WS_CONNECTIONS_PER_IP = 5;
 
 export function createSecurityMiddleware(config: Config): RequestHandler[] {
-  // Configure CORS with enhanced security
   const corsOptions: CorsOptions = {
     origin: (
       origin: string | undefined,
@@ -70,18 +60,25 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
     exposedHeaders: ['Content-Range', 'X-Content-Range'],
   };
 
-  // Configure rate limiting
+  // API rate limiter (local to factory)
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per windowMs
+    message: { error: 'Too many requests, please try again later.' },
+    standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+    legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  });
+
   // Default rate limiter for most API endpoints
   const defaultLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100, // limit each IP to 100 requests per windowMs
-    standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+    standardHeaders: true,
+    legacyHeaders: false,
     handler: (req: Request, res: Response) => {
       res.status(429).json({ error: 'Too many requests, please try again later.' });
     },
-    legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-    message: { error: 'Too many requests, please try again later.' },
-    skip: (req) => {
+    skip: (req: Request) => {
       // Skip rate limiting for health checks and in development
       return req.path === '/api/health' || config.nodeEnv === 'development';
     },
@@ -92,7 +89,7 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 20, // limit each IP to 20 requests per windowMs for auth endpoints
     message: { error: 'Too many login attempts, please try again later.' },
-    handler: (req, res) => {
+    handler: (req: Request, res: Response) => {
       logger.warn('Authentication rate limit exceeded', {
         ip: req.ip,
         path: req.path,
@@ -120,7 +117,7 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
   // WebSocket connection limiter middleware
   const wsConnectionLimiter = (req: Request, res: Response, next: NextFunction): void => {
     // Only apply to WebSocket upgrade requests
-    if (req.headers.upgrade === 'websocket') {
+    if ((req.headers.upgrade || '').toLowerCase() === 'websocket') {
       const ip = req.ip || req.socket.remoteAddress || 'unknown';
       const userAgent = req.headers['user-agent'] || 'unknown';
 
@@ -206,7 +203,7 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
   // Security headers middleware with enhanced CSP
   return [
     // Security monitoring middleware (should be first to catch all requests)
-    securityMonitoringMiddleware,
+    securityMonitoringMiddleware as unknown as RequestHandler,
 
     // Apply CORS before other middleware
     cors(corsOptions),
@@ -228,24 +225,10 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
             "'unsafe-inline'", // Required for some web frameworks
             "'unsafe-eval'", // Required for some web frameworks
           ],
-          styleSrc: [
-            "'self'",
-            "'unsafe-inline'", // Required for inline styles
-          ],
-          imgSrc: [
-            "'self'",
-            'data:', // data: URLs for inline images
-            'https: data:', // External images over HTTPS
-          ],
-          connectSrc: [
-            "'self'",
-            'ws:', // WebSocket connections
-            'wss:', // Secure WebSocket connections
-          ],
-          fontSrc: [
-            "'self'",
-            'data:', // data: URLs for fonts
-          ],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:', 'https: data:'],
+          connectSrc: ["'self'", 'ws:', 'wss:'],
+          fontSrc: ["'self'", 'data:'],
           objectSrc: ["'none'"],
           mediaSrc: ["'self'"],
           frameAncestors: ["'none'"],
@@ -269,22 +252,20 @@ export function createSecurityMiddleware(config: Config): RequestHandler[] {
     }),
 
     // Disable X-Powered-By header
-    (_req: Request, res: Response, next: NextFunction) => {
+    (_req: Request, res: Response, next: NextFunction): void => {
       res.removeHeader('X-Powered-By');
-      return next();
+      next();
     },
 
-    // Apply CORS
-    cors(corsOptions),
-
     // Apply rate limiting to all API routes
-    (req: Request, res: Response, next: NextFunction) => {
+    (req: Request, res: Response, next: NextFunction): void => {
       if (req.path.startsWith('/api/')) {
-        return apiLimiter(req, res, next);
+        return void apiLimiter(req, res, next);
       }
-      return next();
+      return void next();
     },
   ];
 }
 
+// Ensure module exposes both named + default export to avoid CJS/ESM interop issues
 export default createSecurityMiddleware;

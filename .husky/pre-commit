@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+echo "🔍 Running pre-commit checks..."
+
+# Stash unstaged changes
+stash_name="pre-commit-$(date +%s)"
+git stash push --keep-index --include-untracked --message "$stash_name"
+
+# Run checks
+npm run check -- --max-warnings=0
+
+# Capture the exit code of the check
+check_exit_code=$?
+
+# Restore stashed changes if there were any
+if [ "$(git stash list | grep "$stash_name" | wc -l)" -gt 0 ]; then
+  git stash pop --quiet
+fi
+
+# Exit with the check's exit code
+exit $check_exit_code

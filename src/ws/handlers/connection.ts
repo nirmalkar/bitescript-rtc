@@ -1,12 +1,16 @@
+import { IncomingMessage } from 'http';
+import { URL } from 'url';
+
 import { RawData, WebSocket as WS } from 'ws';
-import { WebSocketClient, RoomDoc } from '../../types/webSocket';
-import { startHeartbeat } from './heartbeat';
-import { handleMessage } from './messageHandler';
-import { safeParse } from '../../utils/safeParse';
-import logger from '../../utils/logger';
 import { RateLimiterMemory } from 'rate-limiter-flexible';
 
-// Message rate limiting configuration
+import logger from '../../utils/logger';
+import { safeParse } from '../../utils/safeParse';
+import { WebSocketClient, RoomDoc, RoomManagerLike } from '../../types/webSocket';
+
+import { startHeartbeat } from './heartbeat';
+import { handleMessage } from './messageHandler';
+
 const messageRateLimiter = new RateLimiterMemory({
   points: 100, // 100 messages
   duration: 10, // per 10 seconds per client
@@ -16,16 +20,16 @@ const messageRateLimiter = new RateLimiterMemory({
 // Track message rates per client
 const clientMessageRates = new Map<string, number>();
 
-type Ctx = {
-  wss: any;
+interface Ctx {
+  wss: InstanceType<typeof WS.Server>;
   rooms: Map<string, RoomDoc>;
-  roomManager: any;
+  roomManager: RoomManagerLike;
   activeConnections: Set<WebSocketClient>;
   instanceId: string;
   logger: typeof logger;
-};
+}
 
-export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
+export async function handleConnection(wsRaw: WS, req: IncomingMessage, ctx: Ctx): Promise<void> {
   const { rooms, roomManager, activeConnections } = ctx;
   const ws = wsRaw as WebSocketClient;
 
@@ -51,8 +55,10 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
       activeConnections.delete(ws);
       try {
         removeClientFromAuthoritativeRoom();
-      } catch {}
-      void (async () => {
+      } catch (err) {
+        logger.warn('removeClientFromAuthoritativeRoom threw in onTerminate: %o', err);
+      }
+      void (async (): Promise<void> => {
         try {
           await roomManager.removeAllByClientId(ws.id);
         } catch (e) {
@@ -63,7 +69,7 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
   });
 
   // helper to remove from authoritative rooms (used in cleanup)
-  function removeClientFromAuthoritativeRoom() {
+  function removeClientFromAuthoritativeRoom(): void {
     try {
       const prevRoom = ws.roomId ?? null;
       if (!prevRoom) return;
@@ -72,13 +78,13 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
       room.clients.delete(ws);
       // delete room when empty, same as before
       if (room.clients.size === 0) rooms.delete(prevRoom);
-    } catch (e) {
-      // ignore
+    } catch (err) {
+      logger.warn('Error removing client from authoritative room: %o', err);
     }
   }
 
   // cleanup routine
-  const cleanup = async () => {
+  const cleanup = async (): Promise<void> => {
     const prevRoom = ws.roomId ?? null;
     logger.debug('Starting cleanup for connection', { clientId: ws.id, roomId: prevRoom });
 
@@ -90,16 +96,24 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+
+    // remove from active set
     activeConnections.delete(ws);
+
+    // remove rate tracking
+    clientMessageRates.delete(ws.id);
+
     // notify peers
     try {
       // broadcastPeersUpdate imported inside handler to avoid circular import
       const { broadcastPeersUpdate } = await import('../../utils/wsHelpers');
       broadcastPeersUpdate(activeConnections, prevRoom);
-    } catch (e) {
-      logger.warn('broadcastPeersUpdate failed in cleanup: %o', e);
+    } catch (err) {
+      logger.warn('broadcastPeersUpdate failed in cleanup: %o', err);
     }
+
     removeClientFromAuthoritativeRoom();
+
     try {
       await roomManager.removeAllByClientId(ws.id);
     } catch (err) {
@@ -112,7 +126,7 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
     void cleanup();
   });
 
-  ws.on('error', (err) => {
+  ws.on('error', (err: Error) => {
     logger.error('WebSocket client error', {
       clientId: ws.id,
       error: err.message,
@@ -122,25 +136,28 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
   });
 
   // Message handler with rate limiting and error handling
-  ws.on('message', async (data: RawData, isBinary: boolean) => {
+  ws.on('message', async (data: RawData, isBinary: boolean): Promise<void> => {
     const startTime = Date.now();
     let messageType = 'unknown';
 
     try {
       // Parse the incoming message
       const strOrBuffer = isBinary ? data : data.toString();
-      const message = safeParse<any>(strOrBuffer as any);
+      const message = safeParse<unknown>(strOrBuffer as any);
 
-      if (!message) {
+      if (!message || typeof message !== 'object') {
         throw new Error('Invalid message format');
       }
 
-      messageType = message.type || 'unknown';
+      // message is unknown but we can treat it as Record<string, unknown>
+      const msgObj = message as Record<string, unknown>;
+      messageType = (typeof msgObj.type === 'string' && msgObj.type) || 'unknown';
+
       logger.debug('Processing message', {
         clientId: ws.id,
         messageType,
         isBinary,
-        size: data,
+        size: typeof data === 'string' ? Buffer.byteLength(data) : (data as Buffer).length,
       });
 
       // Apply rate limiting
@@ -155,8 +172,9 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
         }
 
         await messageRateLimiter.consume(ws.id);
-      } catch (rateLimiterRes) {
-        const rateLimitInfo = rateLimiterRes as { msBeforeNext?: number; remainingPoints?: number };
+      } catch (rateLimiterRes: unknown) {
+        const rateLimitInfo =
+          (rateLimiterRes as { msBeforeNext?: number; remainingPoints?: number }) || {};
         logger.warn('Rate limit exceeded', {
           clientId: ws.id,
           messageType,
@@ -175,10 +193,10 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
                 : 60,
             })
           );
-        } catch (sendError: any) {
+        } catch (sendError: unknown) {
           logger.warn('Failed to send rate limit error to client', {
             clientId: ws.id,
-            error: sendError.message,
+            error: sendError instanceof Error ? sendError.message : String(sendError),
           });
         }
         return;
@@ -198,7 +216,7 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
 
       // Process the message
       const processStart = Date.now();
-      await handleMessage({ ws, message, ctx });
+      await handleMessage({ ws, message: msgObj, ctx });
 
       logger.debug('Message processed', {
         clientId: ws.id,
@@ -206,7 +224,7 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
         durationMs: Date.now() - processStart,
         totalDurationMs: Date.now() - startTime,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       const errorContext = {
         clientId: ws.id,
         messageType,
@@ -227,18 +245,13 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
             requestId: Math.random().toString(36).substring(2, 10),
           },
         });
-      } catch (sendError: any) {
+      } catch (sendError: unknown) {
         logger.warn('Failed to send error to client', {
           ...errorContext,
-          sendError: sendError.message,
+          sendError: sendError instanceof Error ? sendError.message : String(sendError),
         });
       }
     }
-  });
-
-  // Clean up rate limiting on disconnect
-  ws.on('close', () => {
-    clientMessageRates.delete(ws.id);
   });
 
   // send initial connected message + peers
@@ -258,7 +271,7 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
         })
       );
     }
-  } catch (err) {
+  } catch (err: unknown) {
     logger.debug('Failed to send connected payload to %s: %o', ws.id, err);
   }
 
@@ -266,7 +279,7 @@ export async function handleConnection(wsRaw: WS, req: any, ctx: Ctx) {
   try {
     const { broadcastPeersUpdate } = await import('../../utils/wsHelpers');
     broadcastPeersUpdate(activeConnections, ws.roomId ?? null);
-  } catch (e) {
-    logger.warn('broadcastPeersUpdate failed after connect: %o', e);
+  } catch (err: unknown) {
+    logger.warn('broadcastPeersUpdate failed after connect: %o', err);
   }
 }

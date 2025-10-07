@@ -1,8 +1,9 @@
+import type { Writable } from 'stream';
 import { format } from 'util';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
+
 import FileStreamRotator from 'file-stream-rotator';
-import type { Writable } from 'stream';
 
 // Ensure logs directory exists
 const LOGS_DIR = join(process.cwd(), 'logs');
@@ -26,6 +27,7 @@ export interface LoggerConfig {
   maxFiles?: number;
   externalTransports?: LogTransport[];
 }
+
 type RequestInfo = {
   method?: string;
   path?: string;
@@ -38,7 +40,7 @@ type RequestInfo = {
 type SecurityEvent = {
   type: 'AUTH_ATTEMPT' | 'RATE_LIMIT' | 'UNAUTHORIZED_ACCESS' | 'SUSPICIOUS_ACTIVITY';
   message: string;
-  metadata?: Record<string, any>;
+  metadata?: Record<string, unknown>;
   request?: RequestInfo;
 };
 
@@ -47,7 +49,7 @@ class Logger {
   private level: LogLevel;
   private context: string;
   private transports: (Writable | LogTransport)[] = [];
-  private fileStream: any; // File stream for rotation
+  private fileStream: Writable | undefined; // File stream for rotation
 
   private constructor(context: string = 'App', config: LoggerConfig = {}) {
     this.context = context;
@@ -57,9 +59,10 @@ class Logger {
     this.initializeTransports(config);
   }
 
-  private initializeTransports(config: LoggerConfig) {
+  private initializeTransports(config: LoggerConfig): void {
     // Console transport (enabled by default)
     if (config.enableConsole !== false) {
+      // process.stdout implements Writable
       this.transports.push(process.stdout);
     }
 
@@ -77,10 +80,12 @@ class Logger {
           extension: '.log',
           create_symlink: true,
           symlink_name: 'app-current.log',
-        });
+        }) as unknown as Writable;
 
         this.transports.push(this.fileStream);
-      } catch (error) {
+      } catch (error: unknown) {
+        // Console fallback since logger may not be initialized yet
+         
         console.error('Failed to initialize file rotation:', error);
       }
     }
@@ -98,11 +103,11 @@ class Logger {
     return Logger.instance;
   }
 
-  public addTransport(transport: Writable) {
+  public addTransport(transport: Writable): void {
     this.transports.push(transport);
   }
 
-  public removeTransport(transport: Writable) {
+  public removeTransport(transport: Writable): void {
     const index = this.transports.indexOf(transport);
     if (index > -1) {
       this.transports.splice(index, 1);
@@ -120,48 +125,71 @@ class Logger {
     return levels[this.level] <= levels[level];
   }
 
-  private formatMessage(level: string, message: string, ...args: any[]): string {
+  private formatMessage(level: string, message: string, ...args: unknown[]): string {
     const timestamp = new Date().toISOString();
-    const formattedMessage = format(message, ...args);
+    const formattedMessage = format(message, ...(args as any)); // util.format requires any
 
     // Create structured log entry
-    const logEntry = {
+    const logEntry: Record<string, unknown> = {
       timestamp,
       level: level.toUpperCase(),
       context: this.context,
       message: formattedMessage,
-      // Add any additional metadata from args
-      ...(args[0] && typeof args[0] === 'object' ? args[0] : {}),
+      // Add any additional metadata from args[0] if it's an object
     };
+
+    if (args[0] && typeof args[0] === 'object') {
+      try {
+        const meta = args[0] as Record<string, unknown>;
+        Object.assign(logEntry, meta);
+      } catch {
+        // ignore serialization issues
+      }
+    }
 
     // Return as JSON string for structured logging
     return JSON.stringify(logEntry);
   }
 
-  private writeLog(level: LogLevel, message: string, ...args: any[]) {
+  private writeLog(level: LogLevel, message: string, ...args: unknown[]): void {
     if (!this.shouldLog(level)) return;
 
     const logMessage = this.formatMessage(level, message, ...args) + '\n';
 
-    // Write to all transports
+    // Write to all transports safely
     this.transports.forEach((transport) => {
-      transport.write(logMessage);
+      try {
+        // LogTransport shape has write method
+        if (
+          (transport as LogTransport).write &&
+          typeof (transport as LogTransport).write === 'function'
+        ) {
+          (transport as LogTransport).write(logMessage);
+        } else if (
+          (transport as Writable).write &&
+          typeof (transport as Writable).write === 'function'
+        ) {
+          (transport as Writable).write(logMessage);
+        }
+      } catch {
+        // ignore per-transport errors
+      }
     });
   }
 
-  public debug(message: string, ...args: any[]): void {
+  public debug(message: string, ...args: unknown[]): void {
     this.writeLog('debug', message, ...args);
   }
 
-  public info(message: string, ...args: any[]): void {
+  public info(message: string, ...args: unknown[]): void {
     this.writeLog('info', message, ...args);
   }
 
-  public warn(message: string, ...args: any[]): void {
+  public warn(message: string, ...args: unknown[]): void {
     this.writeLog('warn', message, ...args);
   }
 
-  public error(message: string, ...args: any[]): void {
+  public error(message: string, ...args: unknown[]): void {
     this.writeLog('error', message, ...args);
   }
 
@@ -170,48 +198,64 @@ class Logger {
     this.writeLog('security', event.message, {
       ...event.metadata,
       type: event.type,
-      request: event.request
+      request: event.request,
     });
   }
 
   // Request logging middleware
-  public requestLogger() {
-    return (req: any, res: any, next: any) => {
+  public requestLogger(): (req: unknown, res: unknown, next: () => void) => void {
+    return (req: unknown, res: unknown, next: () => void): void => {
+      // We intentionally keep these as loose types to avoid coupling to express here
+      const r = req as {
+        headers?: Record<string, unknown>;
+        method?: string;
+        path?: string;
+        ip?: string;
+        user?: { id?: string };
+      };
+      const s = res as { on?: (evt: string, cb: () => void) => void; statusCode?: number };
+
       const start = Date.now();
-      const requestId = req.headers['x-request-id'] || Math.random().toString(36).substring(2, 9);
+      const requestId =
+        (r.headers && r.headers['x-request-id']) || Math.random().toString(36).substring(2, 9);
 
       // Log request start
-      this.info(`Request started: ${req.method} ${req.path}`, {
+      this.info(`Request started: ${r.method} ${r.path}`, {
         requestId,
-        ip: req.ip,
-        userAgent: req.headers['user-agent'],
+        ip: r.ip,
+        userAgent: r.headers?.['user-agent'],
       });
 
       // Log response when finished
-      res.on('finish', () => {
-        const duration = Date.now() - start;
-        const logData = {
-          requestId,
-          method: req.method,
-          path: req.path,
-          status: res.statusCode,
-          duration: `${duration}ms`,
-          user: req.user?.id || 'anonymous',
-        };
+      if (typeof s.on === 'function') {
+        s.on('finish', () => {
+          const duration = Date.now() - start;
+          const logData = {
+            requestId,
+            method: r.method,
+            path: r.path,
+            status: s.statusCode,
+            duration: `${duration}ms`,
+            user: r.user?.id || 'anonymous',
+          };
 
-        if (res.statusCode >= 400) {
-          this.error('Request error', logData);
-        } else {
-          this.info('Request completed', logData);
-        }
-      });
+          if ((s.statusCode || 0) >= 400) {
+            this.error('Request error', logData);
+          } else {
+            this.info('Request completed', logData);
+          }
+        });
+      }
 
       next();
     };
   }
 
   // Log suspicious activity
-  public logSuspiciousActivity(event: Omit<SecurityEvent, 'type'>, requestInfo?: RequestInfo) {
+  public logSuspiciousActivity(
+    event: Omit<SecurityEvent, 'type'>,
+    requestInfo?: RequestInfo
+  ): void {
     this.security({
       type: 'SUSPICIOUS_ACTIVITY',
       ...event,
@@ -223,9 +267,9 @@ class Logger {
   public logAuthAttempt(
     success: boolean,
     message: string,
-    metadata: Record<string, any> = {},
+    metadata: Record<string, unknown> = {},
     requestInfo?: RequestInfo
-  ) {
+  ): void {
     this.security({
       type: 'AUTH_ATTEMPT',
       message,
@@ -248,7 +292,6 @@ export const logger = Logger.getLogger('App', {
 });
 
 // Helper to create a child logger with context
-export const createLogger = (context: string) => Logger.getLogger(context);
+export const createLogger = (context: string): Logger => Logger.getLogger(context);
 
 export default logger;
-
