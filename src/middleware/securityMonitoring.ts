@@ -2,7 +2,7 @@
 import { IncomingHttpHeaders } from 'http';
 
 // Third-party modules
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction } from 'express-serve-static-core';
 
 // Internal modules
 import logger from '../utils/logger';
@@ -64,7 +64,7 @@ export function securityMonitoringMiddleware(
 
   // Response monitoring — wrap send to capture body & timing
   const originalSend = res.send.bind(res);
-   
+
   res.send = function (body?: unknown): Response {
     const responseTime = Date.now() - start;
 

@@ -63,7 +63,11 @@ module.exports = [
         node: {
           extensions: ['.js', '.ts'],
         },
-        typescript: {},
+        // <-- TypeScript resolver config: this is what's required to resolve TS paths & d.ts
+        typescript: {
+          project: ['./tsconfig.json'],
+          alwaysTryTypes: true,
+        },
       },
     },
   },

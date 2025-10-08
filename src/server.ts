@@ -2,7 +2,7 @@ import http from 'http';
 
 import compression from 'compression';
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response } from 'express-serve-static-core';
 
 import { config } from './configuration';
 import { signWsToken } from './auth/jwt';
