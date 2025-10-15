@@ -14,7 +14,7 @@ import logger from '../utils/logger';
 import { handleConnection } from './handlers/connection';
 import { createUpgradeHandler } from './handlers/upgradeHandler';
 
-const { v4: uuidv4 } = require('uuid');
+import { generateUniqueId } from '../utils/uniqueId';
 
 interface WebSocketClient extends SharedWebSocketClient, WebSocket {}
 
@@ -27,7 +27,7 @@ const asSocket = (socket: unknown): Socket => {
 const asWebSocketClient = (ws: WebSocket): WebSocketClient => {
   const client = ws as WebSocketClient;
   if (!client.id) {
-    client.id = uuidv4();
+    client.id = generateUniqueId();
     client.isAlive = true;
   }
   return client;
@@ -71,7 +71,7 @@ export function createWsServer(server: HttpServer): WsServer {
   const activeConnections = new Set<WebSocketClient>();
   const rooms = new Map<string, SharedRoomDoc>();
 
-  const instanceId = uuidv4();
+  const instanceId = generateUniqueId();
 
   // Wire upgrade handler (delegates auth & wss.handleUpgrade)
   server.on('upgrade', (request, socket, head) => {
